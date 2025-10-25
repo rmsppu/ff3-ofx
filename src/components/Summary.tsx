@@ -31,18 +31,18 @@ const Summary = (props: SummaryProps) => {
                 // console.log('virtualBalance', virtualBalance);
 
                 let bBalance = props.bankBalance;
-                // If this is a Credit Card and the balance shows as positive, negate it.
-                if (theAccount.attributes.account_role === FF3AccountRole.CREDIT_CARD_ASSET && bBalance > 0) {
-                    bBalance *= -1;
-                }
+                let aBalance = parseFloat(theAccount.attributes.current_balance ?? '0');
+
                 // console.log('bank Balance', bBalance);
+                // console.log('account Balance', aBalance);
                 // If the account has a virtual balance, then take that into account
                 // NOTE: these balances are sometimes positive and sometimes negative for credit cards so they are hard to handle.
-                if (virtualBalance !== 0) {
-                    bBalance = virtualBalance + (theAccount.attributes.account_role === FF3AccountRole.CREDIT_CARD_ASSET ? -1 : 1) * Math.abs(bBalance);
+                if (theAccount.attributes.account_role === FF3AccountRole.CREDIT_CARD_ASSET &&virtualBalance !== 0) {
+                    bBalance = virtualBalance + -1 * Math.abs(bBalance);
+                    aBalance = virtualBalance + -1 * Math.abs(aBalance);
                 }
-                const balance = parseFloat(parseFloat(''+theAccount.attributes.current_balance).toFixed(2));
-                const balanceDiff = parseFloat((bankBalance - balance).toFixed(2));
+                const balance = parseFloat(parseFloat(''+aBalance).toFixed(2));
+                const balanceDiff = parseFloat((bankBalance - aBalance).toFixed(2));
 
                 // Only update the account once.
                 if (!account) {
@@ -60,7 +60,7 @@ const Summary = (props: SummaryProps) => {
     
 
     return (
-        <Box sx={{ minWidth: 900, maxWidth: '60%' }} pb={2}>
+        <Box sx={{ width: 960 }} pb={2}>
             {props.bankBalance !== accountBalance && (
                 <Alert severity="warning">
                     The bank balance does not match your account balance. Look for transactions that may

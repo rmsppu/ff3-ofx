@@ -16,17 +16,28 @@ export interface OfxTransaction {
     MEMO: string;
 }
 
-export interface OfxData {
+export enum OfxAccountStatus {
+    PROCESSED = 'processed', 
+    PROCESSING = 'processing', 
+    UNPROCESSED = 'unprocessed', 
+}
+
+export interface OfxAccount {
     accountNumber?: string;
     accountType?: string;
-    org?: string;
-    intuitId?: string;
     balance?: number;
     balanceDate?: Moment;
     startDate?: Moment;
     endDate?: Moment;
     currency?: string;
     transactions?: (OfxParsedTransaction | null)[];
+    status: OfxAccountStatus;
+}
+
+export interface OfxData {
+    org?: string;
+    intuitId?: string;
+    accounts: OfxAccount[];
 }
 
 export interface OfxParsedTransaction {

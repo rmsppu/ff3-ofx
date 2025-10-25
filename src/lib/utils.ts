@@ -1,5 +1,5 @@
 import moment, { Moment } from 'moment';
-import { OfxData, OfxParsedTransaction, OfxTransaction } from './interfaces';
+import { OfxAccount, OfxAccountStatus, OfxData, OfxParsedTransaction, OfxTransaction } from './interfaces';
 
 const DATE_FORMAT = 'YYYYMMDDHHmmss';
 
@@ -10,18 +10,11 @@ class Utils {
      * @returns 
      */
     /* eslint-disable @typescript-eslint/no-explicit-any */
-    static getOfxData(ofxDataIn: any) {
+    static getOfxData(ofxDataIn: any): OfxData {
         const ofxData: OfxData = {
-            accountNumber: undefined,
-            accountType: undefined,
+            accounts: [],
             org: undefined,
-            intuitId: undefined,
-            balance: undefined,
-            balanceDate: undefined,
-            startDate: undefined,
-            endDate: undefined,
-            currency: undefined,
-            transactions: [],
+            intuitId: undefined
         };
         
         let ofxTransactions: OfxTransaction[]|null = null;
@@ -32,48 +25,82 @@ class Utils {
         } catch (e) {
             console.warn('OFX.SIGNONMSGSRSV1.SONRS.FI.ORG missing from OFX file', e);
         }
+
+        const processAccount = (account: any): OfxAccount => {
+
+            ofxTransactions = account.CCSTMTRS ? account.CCSTMTRS.BANKTRANLIST.STMTTRN : account.STMTRS.BANKTRANLIST.STMTTRN;
+            // If there is only one transaction, it may not come back as an array, so make sure we have an array back
+            // If there are no transactions, return an empty array.
+            if (ofxTransactions && !Array.isArray(ofxTransactions)) {
+                ofxTransactions = [ofxTransactions];
+            } else if (ofxTransactions == null) {
+                ofxTransactions = [];
+            }
+            // Check to see if this is a credit card transaction
+            if (account.CCSTMTRS) {
+                return {
+                    accountNumber: account.CCSTMTRS.CCACCTFROM.ACCTID,
+                    accountType: "CREDITCARD",
+                    balance: account.CCSTMTRS.LEDGERBAL.BALAMT,
+                    balanceDate: Utils.ofxDateToFF3(
+                        account.CCSTMTRS.LEDGERBAL.DTASOF,
+                    ),
+                    startDate: Utils.ofxDateToFF3(
+                        account.CCSTMTRS.BANKTRANLIST.DTSTART,
+                    ),
+                    endDate: Utils.ofxDateToFF3(
+                        account.CCSTMTRS.BANKTRANLIST.DTEND,
+                    ),
+                    currency: account.CCSTMTRS.CURDEF || 'EUR',
+                    transactions: ofxTransactions.map(ofxTxn => this.parseOfxTransaction(ofxTxn)),
+                    status: OfxAccountStatus.UNPROCESSED
+                };
+            }
+
+            // Otherwise (if not credit card), it must be a checking or saving
+            return {
+                accountNumber: account.STMTRS.BANKACCTFROM.ACCTID,
+                accountType: account.STMTRS.BANKACCTFROM.ACCTTYPE,
+                balance: account.STMTRS.LEDGERBAL?.BALAMT || '?',
+                balanceDate: Utils.ofxDateToFF3(account.STMTRS.LEDGERBAL?.DTASOF) || '?',
+                startDate: Utils.ofxDateToFF3(account.STMTRS.BANKTRANLIST?.DTSTART) || '?',
+                endDate: Utils.ofxDateToFF3(account.STMTRS.BANKTRANLIST?.DTEND) || '?',
+                currency: account.STMTRS.CURDEF || 'EUR',
+                transactions: ofxTransactions.map(ofxTxn => this.parseOfxTransaction(ofxTxn)),
+                status: OfxAccountStatus.UNPROCESSED
+            };
+        };
+        
+        try {
             
-        if (ofxDataIn.OFX.CREDITCARDMSGSRSV1) {
-            // If this is a credit card account
-            ofxData.accountNumber = ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.CCACCTFROM.ACCTID;
-            ofxData.accountType = "CREDITCARD";
-            ofxData.balance = ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.LEDGERBAL.BALAMT;
-            ofxData.balanceDate = Utils.ofxDateToFF3(
-                ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.LEDGERBAL.DTASOF,
-            );
-            ofxData.startDate = Utils.ofxDateToFF3(
-                ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.BANKTRANLIST.DTSTART,
-            );
-            ofxData.endDate = Utils.ofxDateToFF3(
-                ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.BANKTRANLIST.DTEND,
-            );
-            ofxData.currency = ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.CURDEF || 'EUR';
-            ofxTransactions = ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.CCSTMTRS.BANKTRANLIST.STMTTRN;
-        } else if (ofxDataIn.OFX.BANKMSGSRSV1) {
-            // If this is a checking or savings account
-            ofxData.accountNumber = ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.BANKACCTFROM.ACCTID;
-            ofxData.accountType = ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.BANKACCTFROM.ACCTTYPE;
-            ofxData.balance = ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.LEDGERBAL?.BALAMT || '?';
-            ofxData.balanceDate = Utils.ofxDateToFF3(ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.LEDGERBAL?.DTASOF) || '?';
-            ofxData.startDate = Utils.ofxDateToFF3(ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.BANKTRANLIST?.DTSTART) || '?';
-            ofxData.endDate = Utils.ofxDateToFF3(ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.BANKTRANLIST?.DTEND) || '?';
-            ofxData.currency = ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.CURDEF || 'EUR';
-            ofxTransactions = ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.STMTRS.BANKTRANLIST.STMTTRN;
-        } else {
-             
-            throw 'OFX format not understood';
-        }
+            if (ofxDataIn.OFX.CREDITCARDMSGSRSV1) {
+                // If this is a credit card account
 
-        // If there is only one transaction, it may not come back as an array, so make sure we have an array back
-        // If there are no transactions, we get an array of 1 transaction that is null.
-        if (ofxTransactions && !Array.isArray(ofxTransactions)) {
-            ofxTransactions = [ofxTransactions];
-        } else if (ofxTransactions == null) {
-            ofxTransactions = [];
+                if (Array.isArray(ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS)) {
+                    ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS.forEach((account: any) => {
+                        ofxData.accounts?.push(processAccount(account));
+                    });
+                } else {
+                    ofxData.accounts?.push(processAccount(ofxDataIn.OFX.CREDITCARDMSGSRSV1.CCSTMTTRNRS));
+                }
+            } else if (ofxDataIn.OFX.BANKMSGSRSV1) {
+                // If this is a checking or savings account
+                
+                if (Array.isArray(ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS)) {
+                    ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS.forEach((account: any) => {
+                        ofxData.accounts?.push(processAccount(account));
+                    });
+                } else {
+                    ofxData.accounts?.push(processAccount(ofxDataIn.OFX.BANKMSGSRSV1.STMTTRNRS));
+                }
+            } else {
+                
+                throw 'OFX format not understood';
+            }
+        } catch(e) {
+            console.error(e);
+            throw 'Error parsing OFX file';
         }
-
-        // Now reset the transactions with the parsed transactions
-        ofxData.transactions = ofxTransactions.map(ofxTxn => this.parseOfxTransaction(ofxTxn));
         
         return ofxData;
     }

@@ -3,7 +3,7 @@ import ApiService from './lib/apiService';
 import Utils from './lib/utils';
 import moment from 'moment';
 import './App.css';
-import { FF3Account, FF3AccountRole, FF3AddTransactionWrapper, FF3Error, FF3NewAccount, FF3TransactionSplit, FF3TransactionType, FF3Wrapper, IntuitBankInfo, OfxData, OfxParsedTransaction } from '@/lib/interfaces';
+import { FF3Account, FF3AccountRole, FF3AddTransactionWrapper, FF3Error, FF3NewAccount, FF3TransactionSplit, FF3TransactionType, FF3Wrapper, IntuitBankInfo, OfxAccountStatus, OfxData, OfxParsedTransaction } from '@/lib/interfaces';
 import Button from '@mui/material/Button';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import CheckIcon from '@mui/icons-material/Check';
@@ -13,6 +13,7 @@ import Summary from './components/Summary';
 import OfxTransactionsRow from '@/components/OfxTransactionsRow';
 import FileDrop from '@/components/FileDrop';
 import BankInfo from '@/lib/bankinfo.json';
+import OfxSummary from './components/OfxSummary';
 // import { Ofx } from 'ofx-data-extractor';
 
 // Import tag used to identify the import
@@ -26,6 +27,7 @@ const ERROR_NO_ACCOUNT_NO = 'The provided file does not include an account numbe
 const ERROR_MATCH_MULTIPLE_ACCOUNT = 'Found multiple matching accounts';
 const ERROR_NEW_ACCOUNT_FAILED = 'Could not create a new account. Please create the account in FireFlyIII before importing the transactions';
 const ERROR_NO_TRANSACTIONS = 'The OFX file does not contain any transactions';
+const ERROR_BAD_OFX = 'The OFX file format is not understood';
 
 interface Token {
     value: string;
@@ -43,8 +45,10 @@ function App() {
     const [bankName, setBankName] = useState<string>('');
     // These are the processed transactions
     const [transactions, setTransactions] = useState<OfxParsedTransaction[]>([]);
-    // The transactions parsed from OFX
+    // The accounts/transactions parsed from OFX
     const [ofxData, setOfxData] = useState<OfxData>();
+    // The current OFX account/transactions index
+    const [ofxAccountIndex, setOfxAccountIndex] = useState<number>(0);
     // Whether the transaction data has been processed already or not
     const [processed, setProcessed] = useState(false);
     // The current progress for the transactions being processed
@@ -97,6 +101,97 @@ function App() {
         });
     }, [token]);
 
+    const processAccount = useCallback((accountOfxData?: OfxData) => {
+        if (!accountOfxData && !ofxData) {
+            return;
+        } else if (!accountOfxData) {
+            accountOfxData = ofxData;
+        }
+        if (accounts && accounts?.length > 0) {
+            // Make sure we do not have an error
+            setErrorMessage('');
+            // Find the account
+            const theAccount = accounts.find(account => {
+                return account.attributes.account_number === accountOfxData?.accounts[ofxAccountIndex].accountNumber;
+            });
+            if (theAccount) {
+                setProcessed(false);
+                setShowFileDrop(false);
+                setSelectedAccount(theAccount);
+                setOfxData(accountOfxData);
+            } else {
+                console.log('NO matching account found...');
+                // It is possible that the account number is masked, or it contains other characters than a-z or 0-9
+                // so do a secondary search
+                if (accountOfxData?.accounts[ofxAccountIndex].accountNumber) {
+                    const tmpAccountNumber = new RegExp(accountOfxData.accounts[ofxAccountIndex].accountNumber.replace(/[^0-9|a-z|*]/gi, '').replace(/\*{1,}/, '.*'));
+                    console.log('account regex: ' + tmpAccountNumber);
+                    // Now loop thru again and see if we can find any matching account
+                    const partialMatchedAccounts = accounts.filter(account => {
+                        console.info('matching accounts... Comparing: ', tmpAccountNumber, account.attributes.account_number?.replace(/[^0-9|a-z]/gi, ''));
+                        return tmpAccountNumber.test(account.attributes.account_number?.replace(/[^0-9|a-z]/gi, '') || '');
+                    });
+                    console.log('Partially matching accounts: ' + partialMatchedAccounts);
+                    if (Array.isArray(partialMatchedAccounts) && partialMatchedAccounts.length > 0) {
+                        console.info('Found a partial match...');
+                        setShowFileDrop(false);
+                        setOfxData(accountOfxData);
+                        if (partialMatchedAccounts.length === 1) {
+                            setProcessed(false);
+                            setSelectedAccount(partialMatchedAccounts[0]);
+                        } else if (partialMatchedAccounts.length > 1) {
+                            // Find the bank name
+                            setBankName(
+                                BankInfo.find((info: IntuitBankInfo) => {
+                                    return info.id1 === accountOfxData.intuitId;
+                                }
+                            )?.name || '');
+                            setMatchingAccounts(partialMatchedAccounts);
+                            setErrorMessage(ERROR_MATCH_MULTIPLE_ACCOUNT);
+                        }
+                    } else {
+                        // Let us ask the user if they want to create an account
+                        const bankName = BankInfo.find((info: IntuitBankInfo) => {
+                                    return info.id1 === accountOfxData.intuitId;
+                                }
+                            )?.name || '';
+                        setBankName(bankName);
+                        console.log('accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase()', accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase());
+                        console.log('accountOfxData ROLE', accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase() === 'savings' ? FF3AccountRole.SAVING_ASSET : accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase() === 'checking' ? FF3AccountRole.DEFAULT_ASSET : FF3AccountRole.CREDIT_CARD_ASSET);
+                        console.log('accountOfxData.accounts[ofxAccountIndex].accountType', accountOfxData.accounts[ofxAccountIndex].accountType);
+                        console.log('accountOfxData.accounts[ofxAccountIndex].accountNumber', accountOfxData.accounts[ofxAccountIndex].accountNumber);
+                        console.log('accountOfxData NAME', accountOfxData.accounts[ofxAccountIndex].accountType + ' ' + accountOfxData.accounts[ofxAccountIndex].accountNumber.substring(accountOfxData.accounts[ofxAccountIndex].accountNumber.length-4));
+                        const role = accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase() === 'savings' ? FF3AccountRole.SAVING_ASSET : accountOfxData.accounts[ofxAccountIndex].accountType?.toLowerCase() === 'checking' ? FF3AccountRole.DEFAULT_ASSET : FF3AccountRole.CREDIT_CARD_ASSET;
+                        setNewAccountData({
+                            name: accountOfxData.accounts[ofxAccountIndex].accountType + ' ' + accountOfxData.accounts[ofxAccountIndex].accountNumber.substring(accountOfxData.accounts[ofxAccountIndex].accountNumber.length-4),
+                            number: accountOfxData.accounts[ofxAccountIndex].accountNumber,
+                            currency: accountOfxData.accounts[ofxAccountIndex].currency,
+                            role,
+                            institution: accountOfxData.org,
+                            bank: bankName
+                        })
+                        setOfxData(accountOfxData);
+                        setShowFileDrop(false);
+                        setErrorMessage(ERROR_MATCH_ACCOUNT);
+                    }
+                } else {
+                    setErrorMessage(ERROR_NO_ACCOUNT_NO);
+                }
+            }
+        } else {
+            console.warn('No accounts to find a match with...');
+            setErrorMessage(ERROR_NO_ACCOUNT);
+        }
+    },[accounts, ofxAccountIndex, ofxData]);
+
+    const resetState = useCallback(() => {
+        if (matchingAccounts) setMatchingAccounts(undefined);
+        if (selectedAccount) setSelectedAccount(undefined);
+        if (transactions && transactions.length > 0) setTransactions([]);
+        // setTxnIdx(0);
+        if (progress !== 0) setProgress(0);
+    },[matchingAccounts, progress, selectedAccount, transactions]);
+
     const showFile = useCallback((files: File[]) => {
         console.log('showFile files[0].name', files[0]);
         setErrorMessage('');
@@ -108,11 +203,10 @@ function App() {
         } else if (files.length === 1) {
             // Reset our state before reading the new file
             if (ofxData) setOfxData(undefined);
-            if (matchingAccounts) setMatchingAccounts(undefined);
-            if (selectedAccount) setSelectedAccount(undefined);
-            if (transactions && transactions.length > 0) setTransactions([]);
-            // setTxnIdx(0);
-            if (progress !== 0) setProgress(0);
+            // in case our OFX account index is higher than 0 (i.e. we just processed a multi-account ofx), then
+            // set it back to zero in case the new file does not have multiple accounts;
+            if (ofxAccountIndex > 0) setOfxAccountIndex(0);
+            resetState();
 
             // console.log('parsing ofx with new lib...');
             // Ofx.fromBlob(files[0]).then(parsedOfx => {
@@ -129,92 +223,29 @@ function App() {
                 console.debug('file content', e);
                 const parsedData = OFXParser.parse(e.target?.result);
                 // console.debug(parsedData);
-                const tmpOfxData = Utils.getOfxData(parsedData);
-                console.error('parsed data', tmpOfxData.transactions);
-                if (!tmpOfxData || tmpOfxData.transactions?.length === 0) {
-                    console.warn('Either tmpOfxData is undefined/null or there are no transactions in the OFX file...');
-                    setErrorMessage(ERROR_NO_TRANSACTIONS);
-                } else {
-                    if (accounts && accounts?.length > 0) {
-                        // Find the account
-                        const theAccount = accounts.find(account => {
-                            return account.attributes.account_number === tmpOfxData.accountNumber;
-                        });
-                        if (theAccount) {
-                            setProcessed(false);
-                            setShowFileDrop(false);
-                            setSelectedAccount(theAccount);
-                            setOfxData(tmpOfxData);
-                        } else {
-                            console.log('NO matching account found...');
-                            // It is possible that the account number is masked, or it contains other characters than a-z or 0-9
-                            // so do a secondary search
-                            if (tmpOfxData.accountNumber) {
-                                const tmpAccountNumber = new RegExp(tmpOfxData.accountNumber.replace(/[^0-9|a-z|*]/gi, '').replace(/\*{1,}/, '.*'));
-                                console.log('account regex: ' + tmpAccountNumber);
-                                // Now loop thru again and see if we can find any matching account
-                                const partialMatchedAccounts = accounts.filter(account => {
-                                    console.info('matching accounts... Comparing: ', tmpAccountNumber, account.attributes.account_number?.replace(/[^0-9|a-z]/gi, ''));
-                                    return tmpAccountNumber.test(account.attributes.account_number?.replace(/[^0-9|a-z]/gi, '') || '');
-                                });
-                                console.log('Partially matching accounts: ' + partialMatchedAccounts);
-                                if (Array.isArray(partialMatchedAccounts) && partialMatchedAccounts.length > 0) {
-                                    console.info('Found a partial match...');
-                                    setShowFileDrop(false);
-                                    setOfxData(tmpOfxData);
-                                    if (partialMatchedAccounts.length === 1) {
-                                        setProcessed(false);
-                                        setSelectedAccount(partialMatchedAccounts[0]);
-                                    } else if (partialMatchedAccounts.length > 1) {
-                                        // Find the bank name
-                                        setBankName(
-                                            BankInfo.find((info: IntuitBankInfo) => {
-                                                return info.id1 === tmpOfxData.intuitId;
-                                            }
-                                        )?.name || '');
-                                        setMatchingAccounts(partialMatchedAccounts);
-                                        setErrorMessage(ERROR_MATCH_MULTIPLE_ACCOUNT);
-                                    }
-                                } else {
-                                    // Let us ask the user if they want to create an account
-                                    const bankName = BankInfo.find((info: IntuitBankInfo) => {
-                                                return info.id1 === tmpOfxData.intuitId;
-                                            }
-                                        )?.name || '';
-                                    setBankName(bankName);
-                                    console.log('tmpOfxData?.accountType?.toLowerCase()', tmpOfxData?.accountType?.toLowerCase());
-                                    console.log('tmpOfxData ROLE', tmpOfxData?.accountType?.toLowerCase() === 'savings' ? FF3AccountRole.SAVING_ASSET : tmpOfxData?.accountType?.toLowerCase() === 'checking' ? FF3AccountRole.DEFAULT_ASSET : FF3AccountRole.CREDIT_CARD_ASSET);
-                                    console.log('tmpOfxData?.accountType', tmpOfxData?.accountType);
-                                    console.log('tmpOfxData?.accountNumber', tmpOfxData?.accountNumber);
-                                    console.log('tmpOfxData NAME', tmpOfxData?.accountType + ' ' + tmpOfxData?.accountNumber.substring(tmpOfxData.accountNumber.length-4));
-                                    const role = tmpOfxData?.accountType?.toLowerCase() === 'savings' ? FF3AccountRole.SAVING_ASSET : tmpOfxData?.accountType?.toLowerCase() === 'checking' ? FF3AccountRole.DEFAULT_ASSET : FF3AccountRole.CREDIT_CARD_ASSET;
-                                    setNewAccountData({
-                                        name: tmpOfxData?.accountType + ' ' + tmpOfxData?.accountNumber.substring(tmpOfxData.accountNumber.length-4),
-                                        number: tmpOfxData.accountNumber,
-                                        currency: tmpOfxData.currency,
-                                        role,
-                                        institution: tmpOfxData.org,
-                                        bank: bankName
-                                    })
-                                    setOfxData(tmpOfxData);
-                                    setShowFileDrop(false);
-                                    setErrorMessage(ERROR_MATCH_ACCOUNT);
-                                }
-                            } else {
-                                setErrorMessage(ERROR_NO_ACCOUNT_NO);
-                            }
-                        }
+                try {
+                    const tmpOfxData = Utils.getOfxData(parsedData);
+                    console.info('parsed data', tmpOfxData);
+
+                    if (!tmpOfxData || tmpOfxData.accounts.length === 0) {
+                        console.warn('Either tmpOfxData is undefined/null or there are no transactions in the OFX file...');
+                        setErrorMessage(ERROR_NO_TRANSACTIONS);
                     } else {
-                        console.warn('No accounts to find a match with...');
-                        setErrorMessage(ERROR_NO_ACCOUNT);
+                        tmpOfxData.accounts[0].status = OfxAccountStatus.PROCESSING; 
+                        setOfxData(tmpOfxData);
+                        processAccount(tmpOfxData);
                     }
+                } catch(e) {
+                    console.error(e);
+                    setErrorMessage(ERROR_BAD_OFX);
                 }
+                
             };
 
             // start reading the new file (This will trigger the onload event above)
             reader.readAsText(files[0]);
         }
-    }, [accounts, ofxData, progress, selectedAccount, transactions, matchingAccounts]);
+    }, [ofxData, ofxAccountIndex, resetState, processAccount]);
 
     const selectAccount = async (accnt: FF3Wrapper<FF3Account>) => {
         setProcessed(false);
@@ -234,6 +265,8 @@ function App() {
                 setProcessed(false);
                 setSelectedAccount(accnt);
                 setMatchingAccounts(undefined);
+                setAccounts(undefined);
+                setErrorMessage('');
                 return;
             } 
         }
@@ -287,15 +320,18 @@ function App() {
         // 2) comparing to see if a transaction with this amount exists that has a same or different external reference
         // 3) if same external ref, then it must be a match
         // 4) if different internet ref, the it could be a match (prompt the user to choose)
-        console.log('ofxData', ofxData, transactions.length, ofxData?.transactions, selectedAccount);
+        console.log('ofxData', ofxData);
+        console.info('added transactions: ' , transactions.length);
+        console.info('ofxTransactions: ', ofxData?.accounts[ofxAccountIndex].transactions?.length);
+        console.info('selected account: ', selectedAccount);
 
         // The length of transactions is used to process the ofxData transactions, so we must make sure
         // that the length of transactions does not exceed the ofxData transactions so we do not get an
         // index out of bounds
-        if (selectedAccount && ofxData && ofxData.transactions && transactions.length < ofxData.transactions.length) {
+        if (selectedAccount && ofxData && ofxData.accounts[ofxAccountIndex].transactions && transactions.length < ofxData.accounts[ofxAccountIndex].transactions.length) {
             console.log('selectedAccount', selectedAccount);
             // Now loop through the transactions and search for each one
-            const parsedTxn = ofxData.transactions[transactions.length];
+            const parsedTxn = ofxData.accounts[ofxAccountIndex].transactions[transactions.length];
 
             if (parsedTxn) {
                 // We do this to make sure we only have 2 digit decimals
@@ -436,16 +472,28 @@ function App() {
                 }
 
                 console.log('Processed Txn! Progress: ', progress, transactions);
-                setProgress(((transactions.length+1) / ofxData.transactions.length) * 100);
+                setProgress(((transactions.length+1) / ofxData.accounts[ofxAccountIndex].transactions.length) * 100);
             }
         } else {
             console.log('Done processing! Updating final account balance...');
+            if (ofxData) {
+                ofxData.accounts[ofxAccountIndex].status = OfxAccountStatus.PROCESSED;
+                setOfxData(ofxData);
+                // IF there were no transactions in the file, set the error
+                if (ofxData.accounts[ofxAccountIndex].transactions && ofxData.accounts[ofxAccountIndex].transactions.length === 0) {
+                    console.warn('There are no transactions in the OFX file...');
+                    setErrorMessage(ERROR_NO_TRANSACTIONS);
+                }
+            }
             setProcessed(true);
             setShowFileDrop(true);
             console.log('Processed Transactions', progress, transactions);
         }
-    }, [addTransaction, ofxData, progress, selectedAccount, transactions]);
+    }, [ofxData, transactions, ofxAccountIndex, selectedAccount, progress, addTransaction, resetState]);
 
+    /**
+     * Start processing transactions when proper state is set.
+     */
     useEffect(() => {
         if (accounts && ofxData && selectedAccount && !processed) {
             // If we have a selected account and new data, then start processing
@@ -478,10 +526,25 @@ function App() {
         checkForUpdates();
     }, [checkForUpdates]);
 
+    useEffect(() => {
+        if (ofxAccountIndex > 0) {
+            processAccount();
+        }
+    }, [ofxAccountIndex]);
 
-    const bankBalance: number = ofxData ? parseFloat(parseFloat('' + ofxData.balance).toFixed(2)) : 0;
 
-    console.debug('Account role:', newAccountData?.role);
+    // This is used to process the next account in a multi-account ofx file
+    const handleNextAccount = (idx: number) => {
+        if (ofxData && idx < (ofxData.accounts.length || 0)) {
+            ofxData.accounts[idx].status = OfxAccountStatus.PROCESSING;
+            resetState();
+            setOfxAccountIndex(idx);
+        }
+    };
+
+    const bankBalance: number = ofxData ? parseFloat(parseFloat('' + ofxData.accounts[ofxAccountIndex].balance).toFixed(2)) : 0;
+
+    // console.debug('Account role:', newAccountData?.role);
 
     return (
         <div className="App">
@@ -493,8 +556,8 @@ function App() {
             <div className="App-header">
                 <Collapse in={!token}>
                     <Box sx={{ width: '50%', margin: '0 auto' }}>
-                        <Typography variant='h5' sx={{ m: 5 }}>Provide your FireFlyIII token below.  Just tab out of the field when done,
-                            but do not forget to check the store box if you would like to store the key for next time.</Typography>
+                        <Typography variant='h5' sx={{ m: 5 }}>Provide your FireFlyIII token below and click login.  
+                            Do not forget to check the store box if you would like to store the key for next time.</Typography>
                         <TextField
                             required
                             focused
@@ -549,6 +612,9 @@ function App() {
                          )}
                     </Grid>
                 </Collapse>
+                <Collapse in={ofxData && ofxData?.accounts.length > 1}>
+                    <OfxSummary accounts={ofxData?.accounts || []} clickHandler={handleNextAccount} selectionAllowed={processed}/>
+                </Collapse>
                 <Collapse in={!!token && !showFileDrop && !!matchingAccounts && matchingAccounts.length > 1}>
                     <Typography variant='h5' sx={{ m: 5 }}>Multiple accounts matches found!  Please select one of the accounts below to import the transactions</Typography>
                     <div className="scrollview" >
@@ -558,7 +624,7 @@ function App() {
                                     <TableRow>
                                         <TableCell colSpan={3} style={{ backgroundColor: '#eee' }}>
                                             <Typography sx={{ m: 1 }}>
-                                                <b>Account Number:</b> {ofxData?.accountNumber}, <b>Account Type:</b> {ofxData?.accountType}, <b>Org:</b> {ofxData?.org}, <b>Bank:</b> {bankName} ({ofxData?.intuitId})
+                                                <b>Account Number:</b> {ofxData?.accounts[ofxAccountIndex].accountNumber}, <b>Account Type:</b> {ofxData?.accounts[ofxAccountIndex].accountType}, <b>Org:</b> {ofxData?.org}, <b>Bank:</b> {bankName} ({ofxData?.intuitId})
                                             </Typography>
                                         </TableCell>
                                     </TableRow>
